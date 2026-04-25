@@ -22,9 +22,16 @@ fi
 # each assistant text block. Final value = all assistant text since the
 # last user message.
 text=$(jq -rs '
+  # A user entry is a turn boundary only if it carries real user input.
+  # Tool results also appear as type:"user" but should NOT reset the
+  # accumulator since they are part of the assistant turn.
+  def isRealUserInput($e):
+    ($e.message // {}).content as $c |
+    ($c | type) == "string"
+    or (($c | type) == "array" and ($c | any(.type == "text")));
   reduce .[] as $e ("";
     ($e.type // "") as $t |
-    if $t == "user" then ""
+    if $t == "user" and isRealUserInput($e) then ""
     elif $t == "assistant" then
       ((($e.message // {}).content) // []) as $c |
       if ($c | type) == "array" then
