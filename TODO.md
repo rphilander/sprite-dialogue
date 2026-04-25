@@ -12,6 +12,10 @@ Small enhancements and known issues to address.
 - [ ] Chime on turn completion — when an assistant turn ends (no further tool calls pending), play a short sound in the UI so the user is notified that a long-running turn is done. Should be muteable.
 - [ ] Header in upper-left showing `<sprite-name>:<claude-session-name>`, mirrored into the page `<title>` so it's visible in the browser tab too
 - [ ] Copy button on rendered code blocks — small icon in the corner of each `<pre>`/`<code>` block in markdown-rendered messages, clicks to copy the block contents to the clipboard
+- [ ] Self-documenting UI — `?`/Help button that surfaces keyboard shortcuts, paste/drop behavior, and available channel features
+- [ ] README quick-start — short top-of-README path from zero to "I see the UI in my browser" (install plugin → relaunch claude with flag → open `/tmp/sprite-dialogue-url`); push longer detail down
+- [ ] Review shipped docs — audit what's in the repo (README + any plugin-bundled markdown) for accuracy, currency, and end-user-vs-developer-internal fitness
+- [ ] LLM-served file links — new MCP tool that emits a clickable link in the chat (e.g. `<a target="_blank">…</a>`); a server endpoint streams the local file (with a path-safety allowlist) so the user can click to open it in a new tab. Useful for things like "let me show you the CLAUDE.md" or surfacing logs/screenshots that aren't images.
 
 ## Known Issues
 
