@@ -12,8 +12,8 @@
       "description": "Two-way visual dialogue channel — exchange screenshots and text between a laptop browser and Claude Code running in a Sprite.",
       "category": "development",
       "source": {
-        "source": "github",
-        "repo": "rphilander/sprite-dialogue"
+        "source": "url",
+        "url": "https://github.com/rphilander/sprite-dialogue.git"
       },
       "homepage": "https://github.com/rphilander/sprite-dialogue"
     }
