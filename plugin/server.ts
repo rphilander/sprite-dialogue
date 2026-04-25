@@ -12,7 +12,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync, appendFileSync, readdirSync, readlinkSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync, appendFileSync, readdirSync, readlinkSync, existsSync, openSync, readSync, closeSync } from 'fs'
 import { homedir, hostname } from 'os'
 import { join, extname, basename } from 'path'
 import type { ServerWebSocket } from 'bun'
@@ -157,11 +157,11 @@ const mcp = new Server(
     instructions: [
       'The user may be viewing this conversation in two places at once: the terminal where Claude Code is running, and the sprite-dialogue web UI in their browser. They might be looking at either one at any moment.',
       '',
-      'Plugin hooks automatically mirror your conversational text to the UI — you do not need to call any tool to send text. Just respond normally.',
+      'The plugin automatically mirrors your conversational text to the UI as you produce it — you do not need to call any tool to send text. Just respond normally.',
       '',
       'Messages from the web UI arrive as <channel source="sprite-dialogue" chat_id="web" message_id="..." [file_name="..." file_path="..."]>. If the tag has a file_path attribute, Read that file — it is a screenshot or image upload from the user.',
       '',
-      'To send an IMAGE to the user, use the send_image tool with the absolute file path. Use this only for images; text is mirrored automatically.',
+      'To send an IMAGE to the user, use the send_image tool with an absolute file path. Use this only for images; text is mirrored automatically.',
       '',
       `The UI is at the URL written to /tmp/sprite-dialogue-url (port derived from this Sprite's hostname).`,
     ].join('\n'),
@@ -177,7 +177,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Send an image to the sprite-dialogue UI. Pass the absolute path of an image file ' +
         '(png/jpg/gif/webp/svg, 50 MB max). Optional caption text. Use this ONLY for images; ' +
-        'text is mirrored to the UI automatically by the plugin hook.',
+        'text is mirrored to the UI automatically.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -329,25 +329,6 @@ Bun.serve({
       })()
     }
 
-    // Hook-driven echo endpoint: terminal -> UI mirroring
-    if (url.pathname === '/echo' && req.method === 'POST') {
-      return (async () => {
-        try {
-          const body = await req.json() as { type: 'user' | 'assistant'; text: string }
-          const text = (body.text ?? '').toString()
-          if (!text.trim()) return new Response(null, { status: 204 })
-          const from: 'user' | 'assistant' = body.type === 'assistant' ? 'assistant' : 'user'
-          const id = nextId()
-          broadcast({ type: 'msg', id, from, text, ts: Date.now() })
-          log(`[echo] ${from}: ${text.slice(0, 80)}`)
-          return new Response(null, { status: 204 })
-        } catch (err) {
-          log(`[echo] error: ${err}`)
-          return new Response('bad request', { status: 400 })
-        }
-      })()
-    }
-
     // Main page
     if (url.pathname === '/') {
       return new Response(HTML, {
@@ -387,6 +368,125 @@ const URL_FILE = '/tmp/sprite-dialogue-url'
 const url = `http://localhost:${PORT}`
 try { writeFileSync(URL_FILE, url + '\n') } catch {}
 log(`sprite-dialogue: ${url} (logs at ${LOG_FILE}, url at ${URL_FILE})`)
+
+// ---------------------------------------------------------------------------
+// Transcript watcher — mirrors assistant text and terminal user prompts to
+// the UI by tailing ~/.claude/projects/*/*.jsonl. Replaces the previous
+// Stop / UserPromptSubmit hook scripts (which raced the JSONL flush).
+// ---------------------------------------------------------------------------
+
+const TRANSCRIPTS_ROOT = join(homedir(), '.claude', 'projects')
+const transcriptOffsets = new Map<string, number>()
+const transcriptBuffers = new Map<string, string>()
+const seenTranscripts = new Set<string>()
+let transcriptsInitialized = false
+
+function listTranscripts(): string[] {
+  if (!existsSync(TRANSCRIPTS_ROOT)) return []
+  const out: string[] = []
+  try {
+    for (const proj of readdirSync(TRANSCRIPTS_ROOT)) {
+      const dir = join(TRANSCRIPTS_ROOT, proj)
+      try {
+        if (!statSync(dir).isDirectory()) continue
+        for (const f of readdirSync(dir)) {
+          if (f.endsWith('.jsonl')) out.push(join(dir, f))
+        }
+      } catch { /* ignore unreadable project dir */ }
+    }
+  } catch { /* ignore */ }
+  return out
+}
+
+function readNewBytes(path: string): string | null {
+  try {
+    const size = statSync(path).size
+    const start = transcriptOffsets.get(path) ?? 0
+    if (start >= size) return null
+    const len = size - start
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.alloc(len)
+      readSync(fd, buf, 0, len, start)
+      transcriptOffsets.set(path, size)
+      return buf.toString('utf8')
+    } finally {
+      closeSync(fd)
+    }
+  } catch { return null }
+}
+
+function isChannelText(s: string): boolean {
+  return s.trimStart().startsWith('<channel source=')
+}
+
+function extractText(content: any): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  // tool_result blocks mean this is a tool turn, not real user/assistant text.
+  if (content.some((b: any) => b?.type === 'tool_result')) return ''
+  return content
+    .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+    .map((b: any) => b.text)
+    .join('')
+}
+
+function processEntry(entry: any): void {
+  if (!entry || typeof entry !== 'object') return
+  if (entry.type === 'assistant' && entry.message && Array.isArray(entry.message.content)) {
+    const text = extractText(entry.message.content)
+    if (!text.trim()) return
+    broadcast({ type: 'msg', id: nextId(), from: 'assistant', text, ts: Date.now() })
+    log(`[transcript] echoed assistant: ${text.slice(0, 80).replace(/\n/g, ' ')}`)
+  } else if (entry.type === 'user' && entry.message) {
+    const text = extractText(entry.message.content).trim()
+    if (!text) return
+    if (isChannelText(text)) return  // already shown in UI as the original send
+    broadcast({ type: 'msg', id: nextId(), from: 'user', text, ts: Date.now() })
+    log(`[transcript] echoed user: ${text.slice(0, 80).replace(/\n/g, ' ')}`)
+  }
+}
+
+function pollTranscripts(): void {
+  for (const path of listTranscripts()) {
+    if (!seenTranscripts.has(path)) {
+      seenTranscripts.add(path)
+      if (transcriptsInitialized) {
+        // New session appearing while we're running — read from start.
+        transcriptOffsets.set(path, 0)
+        log(`[transcript] new file: ${path}`)
+      } else {
+        // Initial snapshot path: skip pre-existing history.
+        try { transcriptOffsets.set(path, statSync(path).size) } catch {}
+      }
+    }
+    const chunk = readNewBytes(path)
+    if (chunk == null) continue
+    // Buffer the trailing partial line (no \n yet) so we don't try to parse
+    // a half-flushed JSON record. The offset already advanced, so the next
+    // poll's chunk picks up where this one stopped — concat with the buffer.
+    const buffered = (transcriptBuffers.get(path) ?? '') + chunk
+    const parts = buffered.split('\n')
+    const trailing = parts.pop() ?? ''
+    transcriptBuffers.set(path, trailing)
+    for (const line of parts) {
+      if (!line.trim()) continue
+      try { processEntry(JSON.parse(line)) } catch { /* skip malformed */ }
+    }
+  }
+}
+
+function startTranscriptWatcher(): void {
+  for (const path of listTranscripts()) {
+    seenTranscripts.add(path)
+    try { transcriptOffsets.set(path, statSync(path).size) } catch {}
+  }
+  transcriptsInitialized = true
+  setInterval(pollTranscripts, 300)
+  log(`[transcript] watcher started (root=${TRANSCRIPTS_ROOT}, snapshot=${seenTranscripts.size} files)`)
+}
+
+startTranscriptWatcher()
 
 // ---------------------------------------------------------------------------
 // Embedded HTML
