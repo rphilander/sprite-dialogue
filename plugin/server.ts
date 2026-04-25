@@ -32,34 +32,60 @@ function log(msg: string) {
 // Orphan cleanup, parent-death detection, and shutdown
 // ---------------------------------------------------------------------------
 
-// Scan /proc for bun processes running server.ts (other than ourselves)
-// and SIGTERM them. Used at startup so a stale server from a prior run
-// doesn't hold the port.
-function killOrphans(): void {
-  const myCwd = process.cwd()
-  let killed = 0
-  try {
-    for (const entry of readdirSync('/proc')) {
-      const pid = parseInt(entry, 10)
-      if (!pid || pid === process.pid) continue
+// Find the PID listening on `port` by parsing /proc/net/tcp{,6} for the
+// socket inode, then matching it against /proc/*/fd/*.
+function findPortHolderPid(port: number): number | null {
+  const inodes = new Set<string>()
+  for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let content: string
+    try { content = readFileSync(file, 'utf-8') } catch { continue }
+    for (const line of content.split('\n').slice(1)) {
+      const parts = line.trim().split(/\s+/)
+      if (parts.length < 10) continue
+      if (parts[3] !== '0A') continue  // 0A = LISTEN
+      const portHex = parts[1].split(':')[1]
+      if (parseInt(portHex, 16) === port) inodes.add(parts[9])
+    }
+  }
+  if (inodes.size === 0) return null
+  for (const entry of readdirSync('/proc')) {
+    const pid = parseInt(entry, 10)
+    if (!pid) continue
+    let fds: string[]
+    try { fds = readdirSync(`/proc/${pid}/fd`) } catch { continue }
+    for (const fd of fds) {
       try {
-        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf-8').replace(/\0/g, ' ').trim()
-        if (!/(^|\/)bun\b.*\bserver\.ts\b/.test(cmdline)) continue
-        // Additional safety: only kill if cwd matches ours
-        let cwd: string
-        try { cwd = readlinkSync(`/proc/${pid}/cwd`) } catch { continue }
-        if (cwd !== myCwd) continue
-        process.kill(pid, 'SIGTERM')
-        log(`killed orphan bun server.ts pid=${pid}`)
-        killed++
+        const m = readlinkSync(`/proc/${pid}/fd/${fd}`).match(/^socket:\[(\d+)\]$/)
+        if (m && inodes.has(m[1])) return pid
       } catch { /* ignore */ }
     }
-  } catch (err) {
-    log(`killOrphans error: ${err}`)
   }
-  if (killed > 0) {
-    // Give the OS a moment to release the bound port
+  return null
+}
+
+// If our port is held by a stale bun server.ts (from a prior session, possibly
+// in a different cwd after a layout change), SIGTERM it so we can bind. Holders
+// that aren't bun server.ts are left alone — we'll surface EADDRINUSE instead.
+function killOrphans(): void {
+  const holder = findPortHolderPid(PORT)
+  if (!holder || holder === process.pid) return
+  let cmdline: string
+  try {
+    cmdline = readFileSync(`/proc/${holder}/cmdline`, 'utf-8').replace(/\0/g, ' ').trim()
+  } catch {
+    log(`port ${PORT} held by pid=${holder}, cmdline unreadable; not killing`)
+    return
+  }
+  if (!/(^|\/)bun\b.*\bserver\.ts\b/.test(cmdline)) {
+    log(`port ${PORT} held by pid=${holder} (${cmdline}); not a bun server.ts, not killing`)
+    return
+  }
+  try {
+    process.kill(holder, 'SIGTERM')
+    log(`killed orphan bun server.ts pid=${holder} holding port ${PORT}`)
     Bun.sleepSync(500)
+  } catch (err) {
+    log(`failed to SIGTERM pid=${holder}: ${err}`)
   }
 }
 
