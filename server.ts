@@ -12,7 +12,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync, appendFileSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, statSync, copyFileSync, appendFileSync, readdirSync, readlinkSync } from 'fs'
 import { homedir, hostname } from 'os'
 import { join, extname, basename } from 'path'
 import type { ServerWebSocket } from 'bun'
@@ -27,6 +27,59 @@ function log(msg: string) {
   try { appendFileSync(LOG_FILE, line) } catch {}
   try { process.stderr.write(line) } catch {}
 }
+
+// ---------------------------------------------------------------------------
+// Orphan cleanup, parent-death detection, and shutdown
+// ---------------------------------------------------------------------------
+
+// Scan /proc for bun processes running server.ts (other than ourselves)
+// and SIGTERM them. Used at startup so a stale server from a prior run
+// doesn't hold the port.
+function killOrphans(): void {
+  const myCwd = process.cwd()
+  let killed = 0
+  try {
+    for (const entry of readdirSync('/proc')) {
+      const pid = parseInt(entry, 10)
+      if (!pid || pid === process.pid) continue
+      try {
+        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf-8').replace(/\0/g, ' ').trim()
+        if (!/(^|\/)bun\b.*\bserver\.ts\b/.test(cmdline)) continue
+        // Additional safety: only kill if cwd matches ours
+        let cwd: string
+        try { cwd = readlinkSync(`/proc/${pid}/cwd`) } catch { continue }
+        if (cwd !== myCwd) continue
+        process.kill(pid, 'SIGTERM')
+        log(`killed orphan bun server.ts pid=${pid}`)
+        killed++
+      } catch { /* ignore */ }
+    }
+  } catch (err) {
+    log(`killOrphans error: ${err}`)
+  }
+  if (killed > 0) {
+    // Give the OS a moment to release the bound port
+    Bun.sleepSync(500)
+  }
+}
+
+// Watch the parent (Claude Code). If it dies, we exit so we don't become an
+// orphan ourselves.
+function watchParent(): void {
+  const ppid = process.ppid
+  if (!ppid || ppid === 1) return
+  setInterval(() => {
+    try {
+      process.kill(ppid, 0)  // signal 0 = existence check
+    } catch {
+      log(`parent process ${ppid} gone, exiting`)
+      process.exit(0)
+    }
+  }, 5000)
+}
+
+process.on('SIGTERM', () => { log('SIGTERM received, exiting'); process.exit(0) })
+process.on('SIGINT', () => { log('SIGINT received, exiting'); process.exit(0) })
 
 // ---------------------------------------------------------------------------
 // Config
@@ -199,6 +252,10 @@ function deliver(id: string, text: string, file?: { path: string; name: string }
 // ---------------------------------------------------------------------------
 // HTTP + WebSocket server
 // ---------------------------------------------------------------------------
+
+// Self-heal: kill any prior server.ts holding our port, then watch our parent.
+killOrphans()
+watchParent()
 
 Bun.serve({
   port: PORT,
