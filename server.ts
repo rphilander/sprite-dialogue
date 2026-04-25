@@ -341,6 +341,8 @@ const HTML = /* html */ `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sprite-dialogue</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -406,6 +408,66 @@ const HTML = /* html */ `<!doctype html>
   }
 
   .msg-text { white-space: pre-wrap; }
+
+  /* Rendered markdown — keep tight inside chat bubbles */
+  .msg-md { line-height: 1.55; }
+  .msg-md p { margin: 0 0 0.5rem 0; }
+  .msg-md p:last-child { margin-bottom: 0; }
+  .msg-md h1, .msg-md h2, .msg-md h3, .msg-md h4 {
+    margin: 0.75rem 0 0.375rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .msg-md h1 { font-size: 1.15rem; }
+  .msg-md h2 { font-size: 1.05rem; }
+  .msg-md h3, .msg-md h4 { font-size: 0.95rem; }
+  .msg-md ul, .msg-md ol { margin: 0.25rem 0 0.5rem 1.25rem; }
+  .msg-md li { margin: 0.125rem 0; }
+  .msg-md li > p { margin: 0; }
+  .msg-md code {
+    background: rgba(0,0,0,0.35);
+    padding: 0.05rem 0.35rem;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.875em;
+  }
+  .msg-md pre {
+    background: rgba(0,0,0,0.4);
+    padding: 0.625rem 0.75rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.5rem 0;
+    font-size: 0.85em;
+    line-height: 1.45;
+  }
+  .msg-md pre code {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: 1em;
+  }
+  .msg-md a { color: #93c5fd; text-decoration: underline; }
+  .msg-md blockquote {
+    border-left: 3px solid #4b5563;
+    margin: 0.375rem 0;
+    padding: 0 0.75rem;
+    opacity: 0.85;
+  }
+  .msg-md hr {
+    border: none;
+    border-top: 1px solid #374151;
+    margin: 0.625rem 0;
+  }
+  .msg-md table {
+    border-collapse: collapse;
+    margin: 0.5rem 0;
+    font-size: 0.875em;
+  }
+  .msg-md th, .msg-md td {
+    border: 1px solid #374151;
+    padding: 0.25rem 0.5rem;
+  }
+  .msg-md strong { font-weight: 600; }
 
   .msg-reply-quote {
     font-size: 0.75rem;
@@ -659,10 +721,16 @@ function addMessage(m) {
     div.appendChild(quote)
   }
 
-  // Text body
+  // Text body — markdown for assistant, plain for user
   const body = document.createElement('div')
-  body.className = 'msg-text'
-  body.textContent = m.text || ''
+  if (m.from === 'assistant' && m.text && window.marked && window.DOMPurify) {
+    body.className = 'msg-md'
+    const rendered = marked.parse(m.text, { breaks: true, gfm: true })
+    body.innerHTML = DOMPurify.sanitize(rendered)
+  } else {
+    body.className = 'msg-text'
+    body.textContent = m.text || ''
+  }
   div.appendChild(body)
 
   // File / image
