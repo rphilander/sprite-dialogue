@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sprite-dialogue",
+  "description": "Visual dev iteration channel for Claude Code on Sprites",
+  "owner": {
+    "name": "Rodrigo Philander",
+    "email": "rodrigo.philander@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "sprite-dialogue",
+      "description": "Two-way visual dialogue channel — exchange screenshots and text between a laptop browser and Claude Code running in a Sprite.",
+      "category": "development",
+      "source": ".",
+      "homepage": "https://github.com/rphilander/sprite-dialogue"
+    }
+  ]
+}
