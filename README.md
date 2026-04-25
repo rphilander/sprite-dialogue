@@ -28,6 +28,7 @@ Inside Claude Code on the Sprite:
 ```
 /plugin marketplace add rphilander/sprite-dialogue
 /plugin install sprite-dialogue@sprite-dialogue
+/reload-plugins
 ```
 
 Then exit and relaunch Claude with the channel flag:
